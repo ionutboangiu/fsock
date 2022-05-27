@@ -779,7 +779,7 @@ func TestFSockNewFSockPool(t *testing.T) {
 	fsnew := NewFSockPool(maxFSocks, fsaddr, fspw, reconns, maxWait, 0, fibDuration, evHandlers, evFilters, nil, connIdx, true)
 	fsnew.allowedConns = nil
 	fsnew.fSocks = nil
-	fsnew.delayFuncConstructor = nil
+	fsnew.delayFunc = nil
 
 	if !reflect.DeepEqual(fspool, fsnew) {
 		t.Errorf("\nExpected: <%+v>, \nReceived: <%+v>", fspool, fsnew)
@@ -886,7 +886,7 @@ func TestFSockPopFSock5(t *testing.T) {
 		fsPasswd:             "testPw",
 		reconnects:           2,
 		maxReconnectInterval: 0,
-		delayFuncConstructor: fibDuration,
+		delayFunc:            fibDuration,
 		eventHandlers:        make(map[string][]func(string, int)),
 		eventFilters:         make(map[string][]string),
 		logger:               nopLogger{},

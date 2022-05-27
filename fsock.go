@@ -485,7 +485,7 @@ func (fs *FSock) doBackgroundJob(event string) { // add mutex protection
 
 // Instantiates a new FSockPool
 func NewFSockPool(maxFSocks int, fsaddr, fspasswd string, reconnects int, maxWaitConn time.Duration,
-	maxReconnectInterval time.Duration, delayFuncConstructor func(time.Duration, time.Duration) func() time.Duration,
+	maxReconnectInterval time.Duration, delayFunc func(time.Duration, time.Duration) func() time.Duration,
 	eventHandlers map[string][]func(string, int), eventFilters map[string][]string,
 	l logger, connIdx int, bgapiSup bool) *FSockPool {
 	if l == nil {
@@ -497,7 +497,7 @@ func NewFSockPool(maxFSocks int, fsaddr, fspasswd string, reconnects int, maxWai
 		fsPasswd:             fspasswd,
 		reconnects:           reconnects,
 		maxReconnectInterval: maxReconnectInterval,
-		delayFuncConstructor: delayFuncConstructor,
+		delayFunc:            delayFunc,
 		maxWaitConn:          maxWaitConn,
 		eventHandlers:        eventHandlers,
 		eventFilters:         eventFilters,
@@ -519,7 +519,7 @@ type FSockPool struct {
 	fsPasswd             string
 	reconnects           int
 	maxReconnectInterval time.Duration
-	delayFuncConstructor func(time.Duration, time.Duration) func() time.Duration
+	delayFunc            func(time.Duration, time.Duration) func() time.Duration
 	eventHandlers        map[string][]func(string, int)
 	eventFilters         map[string][]string
 	logger               logger
@@ -544,7 +544,7 @@ func (fs *FSockPool) PopFSock() (fsock *FSock, err error) {
 		return
 	case <-fs.allowedConns:
 		tm.Stop()
-		return NewFSock(fs.fsAddr, fs.fsPasswd, fs.reconnects, fs.maxReconnectInterval, fs.delayFuncConstructor,
+		return NewFSock(fs.fsAddr, fs.fsPasswd, fs.reconnects, fs.maxReconnectInterval, fs.delayFunc,
 			fs.eventHandlers, fs.eventFilters, fs.logger, fs.connIdx, fs.bgapiSup)
 	case <-tm.C:
 		return nil, ErrConnectionPoolTimeout
