@@ -1,6 +1,6 @@
 # FreeSWITCH socket client written in [Go](http://cgrates.org/ "Go Website")
 
-## Installation ##
+### Installation ###
 
 `go get github.com/cgrates/fsock`
 
