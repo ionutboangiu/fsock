@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -100,25 +99,13 @@ type FSConn struct {
 func (fsConn *FSConn) readHeaders() (header string, err error) {
 	bytesRead := make([]byte, 0) // buffer to accumulate header bytes
 	var readLine []byte          // temporary slice to hold each line read
-
 	for {
 		if readLine, err = fsConn.rdr.ReadBytes('\n'); err != nil {
-			fsConn.lgr.Err(fmt.Sprintf(
-				"<FSock> Error reading headers: <%v>", err))
-			fsConn.conn.Close() // close the connection regardless
-
-			// Distinguish between errors to handle reconnect logic. If it's not
-			// a network operation error (net.OpError) or if it is a connection
-			// reset error (syscall.ECONNRESET), return io.EOF to signal a
-			// reconnect. Otherwise, return the actual error encountered.
-			var opErr *net.OpError
-			if !errors.As(err, &opErr) || errors.Is(opErr.Err, syscall.ECONNRESET) {
-				return "", io.EOF
-			}
-			return "", err
+			// NOTE: Wrap the error to know where it's coming from (now that
+			// err is handled by the handleConnectionError goroutine). Use
+			// %w to be able to check it with errors.Is().
+			return "", fmt.Errorf("failed to read headers: %w", err)
 		}
-
-		// Check if the line is empty.
 		if len(bytes.TrimSpace(readLine)) == 0 {
 			// Empty line indicates the end of the headers, exit loop.
 			break
@@ -230,7 +217,10 @@ func (fsConn *FSConn) readEvent() (header string, body string, err error) {
 	}
 	cl, err := strconv.Atoi(headerVal(header, "Content-Length"))
 	if err != nil {
-		return "", "", fmt.Errorf("invalid Content-Length header: %v", err)
+		// NOTE: Wrap the error to know where it's coming from (now that
+		// err is handled by the handleConnectionError goroutine). Use
+		// %w to be able to check it with errors.Is().
+		return "", "", fmt.Errorf("invalid Content-Length header: %w", err)
 	}
 	if body, err = fsConn.readBody(cl); err != nil {
 		return "", "", err
@@ -244,9 +234,10 @@ func (fsConn *FSConn) readBody(noBytes int) (string, error) {
 	bytesRead := make([]byte, noBytes)
 	_, err := io.ReadFull(fsConn.rdr, bytesRead)
 	if err != nil {
-		fsConn.lgr.Err(fmt.Sprintf("<FSock> Error reading message body: <%v>", err))
-		fsConn.conn.Close()
-		return "", io.EOF // Return io.EOF to trigger ReconnectIfNeeded.
+		// NOTE: Wrap the error to know where it's coming from (now that
+		// err is handled by the handleConnectionError goroutine). Use
+		// %w to be able to check it with errors.Is().
+		return "", fmt.Errorf("failed to read message body: %w", err)
 	}
 	return string(bytesRead), nil
 }

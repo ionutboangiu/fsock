@@ -14,7 +14,10 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -109,30 +112,122 @@ func (fs *FSock) connect() (err error) {
 // reconnection. It logs errors and manages the stopError channel signaling based on the
 // encountered error.
 func (fs *FSock) handleConnectionError(connErr chan error) {
-	err := <-connErr // Wait for an error signal from readEvents.
+	err := <-connErr // wait for an error signal from readEvents
 
-	if err != io.EOF {
-		// Signal nil error for intentional shutdowns.
-		fs.signalError(nil)
-		return // don't attempt reconnect
-	}
+	// All errors will be logged regardless.
+	fs.logger.Err(fmt.Sprintf("<FSock> readEvents error (connection index: %d): %v", fs.connIdx, err))
 
-	// Attempt to reconnect if the error indicates a dropped connection (io.EOF).
+	// NOTE: we could revise handleConnectionError to allow receiving more
+	// than error. This way, if it's an error that does require
+	// reconnecting but the connection is still alive, we can just continue
+	// right after logging the error. This way we do not reach the
+	// fs.disconnect() Call and we can keep using the current connection.
+	/*
+		for err := range connErr{
+			...
+		}
+	*/
+
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
+	// NOTE: fs.disconnect() was moved higher because now we do not Close the connection on
+	// readHeaders/readBody side anymore to prevent redundant double closes
+	// (sometimes on already closed connections).
+
+	// Always making sure the connection is closed to prevent stale connections.
 	if err := fs.disconnect(); err != nil {
 		fs.logger.Warning(fmt.Sprintf(
 			"<FSock> Failed to disconnect from FreeSWITCH (connection index: %d): %v",
 			fs.connIdx, err))
 	}
-	if err = fs.reconnectIfNeeded(); err != nil {
-		fs.logger.Err(fmt.Sprintf(
-			"<FSock> Failed to reconnect to FreeSWITCH (connection index: %d): %v",
-			fs.connIdx, err))
+
+	// NOTE: Even though we are receiving a net.ErrClosed error, we cannot
+	// use errors.Is to check for it because it is not wrapped properly.
+	if strings.Contains(err.Error(), "use of closed network connection") {
+		fs.signalError(nil) // intended shutdown
+		return
+	}
+
+	if !shouldReconnect(err) {
+		fs.signalError(err)
+		return
+	}
+
+	if err := fs.reconnectIfNeeded(); err != nil {
 		fs.signalError(err)
 	}
 }
+
+// shouldReconnect determines if an fsock reconnect is supposed to happen based on err.
+// Assumes err is non-nil.
+func shouldReconnect(err error) bool {
+	var opErr *net.OpError
+	var numErr *strconv.NumError
+	switch {
+	// NOTE: special handling required for errors of type net.OpError. We
+	// currently want to reconnect only for ECONNRESET and ETIMEDOUT.
+	// Won't be needed anymore after false will be returned on the default case.
+	// See below how the shouldReconnect function should look in the end
+	// once we have everything figured out.
+	case errors.As(err, &opErr):
+		// NOTE: opErr.Timeout() check accounts for errors like
+		// syscall.ECONNRESET, syscall.ETIMEOUT, syscall.EAGAIN,
+		// syscall.EWOULDBLOCK, os.ErrDeadlineExceeded. There could be
+		// other which is why I would use the Timeout() method instead.
+		if errors.Is(opErr.Err, syscall.ECONNRESET) || opErr.Timeout() {
+			return true
+		}
+		return false
+	case
+		// NOTE: add the conditions like this in case we don't want to
+		// use the Timeout() function. But it might miss some timeout
+		// errors.
+		//
+		// errors.Is(err, syscall.ECONNRESET),
+		// errors.Is(err, syscall.ETIMEDOUT),
+		// errors.Is(err, syscall.EAGAIN),
+		// errors.Is(err, syscall.EWOULDBLOCK),
+		// errors.Is(err, os.ErrDeadlineExceeded),
+
+		errors.Is(err, io.EOF),
+		errors.Is(err, io.ErrUnexpectedEOF):
+		return true
+	case errors.As(err, &numErr):
+		// NOTE: previously ignored (would not be logged and would trigger reconnect)
+
+		// for content length parsing errors
+		return false
+	default:
+		// TODO: currently returning true to maintain backwards
+		// compatibility. Might want to specifically handle all the
+		// errors that we want to reconnect on and change the default
+		// case to return false.
+		return true
+	}
+}
+
+/*
+This is how shouldReconnect should look like after figuring out exactly on
+what errors we want to reconnect on.
+
+func shouldReconnect(err error) bool {
+	var opErr *net.OpError
+	switch {
+	case errors.As(err, &opErr) && opErr.Timeout():
+		// Always reconnect on timeout errors.
+		return true
+	case
+		// Add here all the other errors we should reconnect on.
+		errors.Is(err, syscall.ECONNRESET), // connection reset by peer
+		errors.Is(err, io.EOF),
+		errors.Is(err, io.ErrUnexpectedEOF):
+		return true
+	default:
+		return false
+	}
+}
+*/
 
 // signalError handles logging or sending the error to the stopError channel.
 func (fs *FSock) signalError(err error) {
