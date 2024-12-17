@@ -14,7 +14,9 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -109,28 +111,46 @@ func (fs *FSock) connect() (err error) {
 // reconnection. It logs errors and manages the stopError channel signaling based on the
 // encountered error.
 func (fs *FSock) handleConnectionError(connErr chan error) {
-	err := <-connErr // Wait for an error signal from readEvents.
+	err := <-connErr // wait for an error signal from readEvents
 	fs.logger.Err(fmt.Sprintf("<FSock> readEvents error (connection index: %d): %v", fs.connIdx, err))
-	if err != io.EOF {
-		// Signal nil error for intentional shutdowns.
-		fs.signalError(nil)
-		return // don't attempt reconnect
+
+	if strings.Contains(err.Error(), "use of closed network connection") {
+		fs.signalError(nil) // intended shutdown
+		return
 	}
 
-	// Attempt to reconnect if the error indicates a dropped connection (io.EOF).
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if err := fs.disconnect(); err != nil {
+	if err := fs.disconnect(); err != nil { // always disconnect to prevent stale connections
 		fs.logger.Warning(fmt.Sprintf(
 			"<FSock> Failed to disconnect from FreeSWITCH (connection index: %d): %v",
 			fs.connIdx, err))
 	}
-	if err = fs.reconnectIfNeeded(); err != nil {
-		fs.logger.Err(fmt.Sprintf(
-			"<FSock> Failed to reconnect to FreeSWITCH (connection index: %d): %v",
-			fs.connIdx, err))
+
+	if !shouldReconnect(err) {
 		fs.signalError(err)
+		return
+	}
+
+	if err := fs.reconnectIfNeeded(); err != nil {
+		fs.signalError(err)
+	}
+}
+
+func shouldReconnect(err error) bool {
+	var opErr *net.OpError
+	switch {
+	case errors.As(err, &opErr) && opErr.Timeout():
+		// Always reconnect on timeout errors.
+		return true
+	case
+		errors.Is(err, syscall.ECONNRESET), // connection reset by peer
+		errors.Is(err, io.EOF),
+		errors.Is(err, io.ErrUnexpectedEOF):
+		return true
+	default:
+		return false
 	}
 }
 

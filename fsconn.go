@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -103,25 +102,8 @@ func (fsConn *FSConn) readHeaders() (header string, err error) {
 
 	for {
 		if readLine, err = fsConn.rdr.ReadBytes('\n'); err != nil {
-			fsConn.lgr.Err(fmt.Sprintf(
-				"<FSock> Error reading headers: <%v>", err))
-			fsConn.conn.Close() // close the connection regardless
-
-			// Distinguish between different types of network errors to handle reconnection:
-			// Return io.EOF (triggering a reconnect) if either:
-			// - The error is not a network operation error (net.OpError)
-			// - The connection timed out (opErr.Timeout())
-			// - The connection was reset by peer (syscall.ECONNRESET)
-			// For all other network operation errors, return the original error.
-			var opErr *net.OpError
-			if !errors.As(err, &opErr) || opErr.Timeout() ||
-				errors.Is(opErr.Err, syscall.ECONNRESET) {
-				return "", io.EOF
-			}
-			return "", err
+			return "", fmt.Errorf("failed to read headers: %w", err)
 		}
-
-		// Check if the line is empty.
 		if len(bytes.TrimSpace(readLine)) == 0 {
 			// Empty line indicates the end of the headers, exit loop.
 			break
@@ -247,9 +229,7 @@ func (fsConn *FSConn) readBody(noBytes int) (string, error) {
 	bytesRead := make([]byte, noBytes)
 	_, err := io.ReadFull(fsConn.rdr, bytesRead)
 	if err != nil {
-		fsConn.lgr.Err(fmt.Sprintf("<FSock> Error reading message body: <%v>", err))
-		fsConn.conn.Close()
-		return "", io.EOF // Return io.EOF to trigger ReconnectIfNeeded.
+		return "", fmt.Errorf("failed to read message body: %w", err)
 	}
 	return string(bytesRead), nil
 }
